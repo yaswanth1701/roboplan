@@ -216,7 +216,13 @@ private:
   /// @param q_group The group joint positions, in expanded (original) coordinates.
   /// @return The collapsed configuration used for nearest-neighbor lookups.
   Eigen::VectorXd collapse(const Eigen::VectorXd& q_group) const;
-
+  
+  /// @brief Check if the joint configuration statisfies the constraints imposed by user and find the 
+  /// suitable configuration which fits the constraints.
+  /// @details Thin wrapper around `collapseContinuousJointPositions` that throws on failure, so the
+  /// tree operations can call it without repeating the error handling at each call site.
+  /// @param q_group The group joint positions, in expanded (original) coordinates.
+  /// @return The collapsed configuration used for nearest-neighbor lookups.
   bool ConstrainConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current);
 
   bool PoseProjectConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current,
@@ -228,7 +234,7 @@ private:
   /// axes within bounds, positive for exceeding max, negative for falling below min.
   /// @param q The full joint configuration.
   /// @return A 6D signed distance vector [dx, dy, dz, rx, ry, rz].
-  Vector6d DistanceFromConstraintFrame(const Eigen::VectorXd& q) const;
+  Vector6d DisplacementFromConstraint(const Eigen::VectorXd& q) const;
 
   /// @brief A pointer to the scene.
   std::shared_ptr<Scene> scene_;

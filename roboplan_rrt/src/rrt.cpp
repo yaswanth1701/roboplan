@@ -106,6 +106,20 @@ tl::expected<JointPath, std::string> RRT::plan(const JointConfiguration& start,
     return tl::make_unexpected("Goal configuration is in collision, cannot plan!");
   }
 
+  if (options_.rrt_connect && options_.pose_constraint.has_value()) {
+    auto pose_constraint = options_.pose_constraint.value();
+    auto q_start_distance = DisplacementFromConstraint(q_start);
+    auto q_goal_distance = DisplacementFromConstraint(q_goal);
+
+    if (q_start_distance.norm() > pose_constraint.tolerence) {
+      return tl::make_unexpected("Start configuration violates pose constraint, cannot plan!");
+    }
+
+    if (q_goal_distance.norm() > pose_constraint.tolerence) {
+      return tl::make_unexpected("Goal configuration violates pose constraint, cannot plan!");
+    }
+  }
+
   // Check whether direct connection between the start and goal is possible.
   // Both endpoints were validated as collision-free above, so we only check the interior.
   if ((scene_->configurationDistance(q_start, q_goal) <= options_.max_connection_distance) &&
@@ -242,16 +256,14 @@ bool RRT::growTree(KdTree& kd_tree, std::vector<Node>& nodes, const Eigen::Vecto
     // Extend towards the sampled node
     auto q_extend = extend(q_current, q_sample, options_.max_connection_distance);
 
-    if (options_.rrt_connect && options_.pose_constraint.has_value())
-    {
-      if (!ConstrainConfig(q_extend, q_current))
-      {
+    if (options_.rrt_connect && options_.pose_constraint.has_value()) {
+      if (!ConstrainConfig(q_extend, q_current)) {
         continue;
       }
 
-      /// check progress towards goal 
-      if (scene_->configurationDistance(q_extend, q_sample) > scene_->configurationDistance(q_current, q_sample))
-      {
+      /// check progress towards goal
+      if (scene_->configurationDistance(q_extend, q_sample) >
+          scene_->configurationDistance(q_current, q_sample)) {
         continue;
       }
     }
@@ -512,13 +524,12 @@ void RRT::setPoseConstraint(const PoseConstraint& constraint) {
 bool RRT::ConstrainConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current) {
 
   if (options_.pose_constraint.has_value()) {
-    if (!this->PoseProjectConfig(q_extend, q_current,
-                                options_.pose_constraint.value())) {
+    if (!this->PoseProjectConfig(q_extend, q_current, options_.pose_constraint.value())) {
       return false;
     };
   }
 
-  /// torque constraint 
+  /// torque constraint
 
   return true;
 }
@@ -526,7 +537,9 @@ bool RRT::ConstrainConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_cu
 bool RRT::PoseProjectConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current,
                             const PoseConstraint& constraint) {
 
-  const auto frame_id = scene_->getFrameId(constraint.frame_name).value(); /// check this previous in constructor and set pose consstrain function
+  const auto frame_id =
+      scene_->getFrameId(constraint.link_name)
+          .value();  /// check this previous in constructor and set pose constraint function
   const auto& v_indices = joint_group_info_.v_indices;
   const int nv = scene_->getModel().nv;
   const int nv_group = static_cast<int>(v_indices.size());
@@ -538,7 +551,7 @@ bool RRT::PoseProjectConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_
 
   while (true) {
 
-    auto delta_x = this->DistanceFromConstraintFrame(q_projected);
+    auto delta_x = this->DisplacementFromConstraint(q_projected);
 
     if (delta_x.norm() < constraint.tolerence) {
       break;
@@ -556,8 +569,9 @@ bool RRT::PoseProjectConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_
 
     q_projected = pinocchio::integrate(scene_->getModel(), q_projected, delta_q);
 
-    if ((scene_->configurationDistance(q_projected, q_current) > 2 * options_.max_connection_distance)
-        || !scene_->isValidConfiguration(q_projected)) {
+    if ((scene_->configurationDistance(q_projected, q_current) >
+         2 * options_.max_connection_distance) ||
+        !scene_->isValidConfiguration(q_projected)) {
       return false;
     }
   }
@@ -566,30 +580,24 @@ bool RRT::PoseProjectConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_
   return true;
 }
 
-Vector6d RRT::DistanceFromConstraintFrame(const Eigen::VectorXd& q) const {
+Vector6d RRT::DisplacementFromConstraint(const Eigen::VectorXd& q) const {
 
   Vector6d error;
   const PoseConstraint& constraint = options_.pose_constraint.value();
 
-  const Eigen::Matrix4d T_world_ee = scene_->forwardKinematics(q, constraint.frame_name);
+  const Eigen::Matrix4d T_world_ee = scene_->forwardKinematics(q, constraint.link_name);
 
   const Eigen::Matrix3d R_ref = constraint.frame.topLeftCorner<3, 3>();
 
-  // EE pose expressed in the constraint frame: T_rel = T_ref^{-1} * T_world_ee.
   const Eigen::Matrix4d T_rel = relativeTransform(T_world_ee, constraint.frame);
   const Eigen::Matrix3d R_rel = T_rel.topLeftCorner<3, 3>();
 
   error.head<3>() = T_rel.topRightCorner<3, 1>();
-  // Orientation as extrinsic XYZ Euler angles (roll, pitch, yaw) of the EE relative to the
-  // reference frame, matching the min/max bound convention.
   error.tail<3>() = rotationToExtrinsicEuler(R_rel);
 
   const Vector6d violation =
       (error - constraint.max).cwiseMax(0.0) + (error - constraint.min).cwiseMin(0.0);
 
-  // Map the extrinsic-XYZ Euler-angle violation [roll, pitch, yaw] to an angular velocity in the
-  // reference frame via E (Euler rates -> omega; built from the current angles), then rotate it
-  // into world axes to match the LOCAL_WORLD_ALIGNED Jacobian. Singular at pitch = +/- pi/2.
   const Eigen::Matrix3d e = eulerRateToAngularVelocityMatrix(error.tail<3>());
 
   Vector6d violation_world;
