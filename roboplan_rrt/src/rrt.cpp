@@ -5,7 +5,9 @@
 #include <stdexcept>
 
 #include <roboplan/core/path_utils.hpp>
+#include <roboplan/core/pose_utils.hpp>
 #include <roboplan/core/scene_utils.hpp>
+#include <roboplan/core/twist_utils.hpp>
 #include <roboplan_rrt/rrt.hpp>
 
 namespace roboplan {
@@ -239,6 +241,20 @@ bool RRT::growTree(KdTree& kd_tree, std::vector<Node>& nodes, const Eigen::Vecto
   while (true) {
     // Extend towards the sampled node
     auto q_extend = extend(q_current, q_sample, options_.max_connection_distance);
+
+    if (options_.rrt_connect && options_.pose_constraint.has_value())
+    {
+      if (!ConstrainConfig(q_extend, q_current))
+      {
+        continue;
+      }
+
+      /// check progress towards goal 
+      if (scene_->configurationDistance(q_extend, q_sample) > scene_->configurationDistance(q_current, q_sample))
+      {
+        continue;
+      }
+    }
 
     // If the extended node cannot be connected to the tree then throw it away and return. The new
     // endpoint `q_extend` must be validated; `q_current` is always an existing (known collision-
@@ -491,25 +507,23 @@ void RRT::setRngSeed(unsigned int seed) {
 
 void RRT::setPoseConstraint(const PoseConstraint& constraint) {
   options_.pose_constraint = constraint;
-  const Eigen::Quaterniond quat_ref(constraint.Frame.rotation());
-  pose_ref_ << constraint.Frame.translation(), quat_ref.coeffs();
 }
 
-bool RRT::ConstrainConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current,
-                          const CollisionContext& collision_context) {
+bool RRT::ConstrainConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current) {
 
   if (options_.pose_constraint.has_value()) {
-    if (this->PoseProjectConfig(q_extend, q_current, collision_context,
+    if (!this->PoseProjectConfig(q_extend, q_current,
                                 options_.pose_constraint.value())) {
-      return true;
+      return false;
     };
   }
 
-  return false;
+  /// torque constraint 
+
+  return true;
 }
 
 bool RRT::PoseProjectConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current,
-                            const CollisionContext& collision_context,
                             const PoseConstraint& constraint) {
 
   const auto frame_id = scene_->getFrameId(constraint.frame_name).value(); /// check this previous in constructor and set pose consstrain function
@@ -517,7 +531,7 @@ bool RRT::PoseProjectConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_
   const int nv = scene_->getModel().nv;
   const int nv_group = static_cast<int>(v_indices.size());
 
-  Eigen::VectorXd q_projected = q_extend;
+  auto q_projected = q_extend;
 
   Eigen::MatrixXd J_full(6, nv);
   Eigen::MatrixXd J_group(6, nv_group);
@@ -533,35 +547,55 @@ bool RRT::PoseProjectConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_
     J_full.setZero();
     scene_->computeFrameJacobian(q_projected, frame_id, pinocchio::LOCAL_WORLD_ALIGNED, J_full);
 
-    for (int i = 0; i < nv_group; ++i) {
-      J_group.col(i) = J_full.col(v_indices(i));
-    }
+    J_group = J_full(Eigen::all, v_indices);
 
-    q_projected += J_group.transpose() * (J_group * J_group.transpose()).lu().solve(delta_x);
+    constexpr double kDampingSq = 1e-6;
+    Eigen::Matrix<double, 6, 6> JJt = J_group * J_group.transpose();
+    JJt.diagonal().array() += kDampingSq;
+    const Eigen::VectorXd delta_q = -J_group.transpose() * JJt.ldlt().solve(delta_x);
 
-    if (((q_projected - q_current).norm() > 2 * options_.max_connection_distance) ||
-         scene_->isValidConfiguration(q_projected)) {
+    q_projected = pinocchio::integrate(scene_->getModel(), q_projected, delta_q);
+
+    if ((scene_->configurationDistance(q_projected, q_current) > 2 * options_.max_connection_distance)
+        || !scene_->isValidConfiguration(q_projected)) {
       return false;
     }
   }
 
-  q_extent = q_project;
+  q_extend = q_projected;
   return true;
 }
 
 Vector6d RRT::DistanceFromConstraintFrame(const Eigen::VectorXd& q) const {
-  const auto& constraint = options_.pose_constraint.value();
+
+  Vector6d error;
+  const PoseConstraint& constraint = options_.pose_constraint.value();
 
   const Eigen::Matrix4d T_world_ee = scene_->forwardKinematics(q, constraint.frame_name);
 
-  const Eigen::Quaterniond quat_ee(T_world_ee.topLeftCorner<3, 3>());
-  Eigen::Matrix<double, 7, 1> pose_ee;
-  pose_ee << T_world_ee.topRightCorner<3, 1>(), quat_ee.coeffs();
+  const Eigen::Matrix3d R_ref = constraint.frame.topLeftCorner<3, 3>();
 
-  dynotree::R3SO3<double> r3so3;
-  const Vector6d error = r3so3.per_axis_error(pose_ee, pose_ref_);
+  // EE pose expressed in the constraint frame: T_rel = T_ref^{-1} * T_world_ee.
+  const Eigen::Matrix4d T_rel = relativeTransform(T_world_ee, constraint.frame);
+  const Eigen::Matrix3d R_rel = T_rel.topLeftCorner<3, 3>();
 
-  return (error - constraint.max).cwiseMax(0.0) + (error - constraint.min).cwiseMin(0.0);
+  error.head<3>() = T_rel.topRightCorner<3, 1>();
+  // Orientation as extrinsic XYZ Euler angles (roll, pitch, yaw) of the EE relative to the
+  // reference frame, matching the min/max bound convention.
+  error.tail<3>() = rotationToExtrinsicEuler(R_rel);
+
+  const Vector6d violation =
+      (error - constraint.max).cwiseMax(0.0) + (error - constraint.min).cwiseMin(0.0);
+
+  // Map the extrinsic-XYZ Euler-angle violation [roll, pitch, yaw] to an angular velocity in the
+  // reference frame via E (Euler rates -> omega; built from the current angles), then rotate it
+  // into world axes to match the LOCAL_WORLD_ALIGNED Jacobian. Singular at pitch = +/- pi/2.
+  const Eigen::Matrix3d e = eulerRateToAngularVelocityMatrix(error.tail<3>());
+
+  Vector6d violation_world;
+  violation_world.head<3>() = R_ref * violation.head<3>();
+  violation_world.tail<3>() = R_ref * (e * violation.tail<3>());
+  return violation_world;
 }
 
 }  // namespace roboplan

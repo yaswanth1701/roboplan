@@ -50,6 +50,7 @@ add_library(roboplan SHARED
     src/core/pose_utils.cpp
     src/core/scene.cpp
     src/core/scene_utils.cpp
+    src/core/twist_utils.cpp
     src/core/types.cpp
 )
 target_include_directories(roboplan PUBLIC

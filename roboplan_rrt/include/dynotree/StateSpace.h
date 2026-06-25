@@ -582,6 +582,10 @@ template <typename Scalar, int Dimensions = -1> struct Rn {
     Scalar d = rn_squared.distance(x, y);
     return std::sqrt(d);
   }
+
+  inline Eigen::Matrix<Scalar, Dimensions, 1> per_axis_error(cref_t &x, cref_t &y) const {
+    return (x - y);
+  }
 };
 
 struct Vpure {
@@ -1030,6 +1034,19 @@ template <typename Scalar> struct SO3 {
 
     return std::sqrt(so3squared.distance(x, y));
   };
+
+  inline Eigen::Matrix<Scalar, 3, 1> per_axis_error(cref_t x, cref_t y) const {
+    Eigen::Quaternion<Scalar> q1(x);
+    Eigen::Quaternion<Scalar> q2(y);
+    Eigen::Quaternion<Scalar> q_rel = q2.inverse() * q1;
+
+    if (q_rel.w() < 0) {
+      q_rel.coeffs() = -q_rel.coeffs();
+    }
+
+    Eigen::AngleAxis<Scalar> aa(q_rel);
+    return (aa.axis() * aa.angle());
+  }
 };
 
 // Rigid Body: Pose and Velocities
@@ -1132,6 +1149,13 @@ template <typename Scalar> struct R3SO3 {
     Scalar d2 = so3.distance(x.template tail<4>(), y.template tail<4>());
     return d1 + d2;
   };
+
+  inline Eigen::Matrix<Scalar, 6, 1> per_axis_error(cref_t x, cref_t y) const {
+    Eigen::Matrix<Scalar, 6, 1> err;
+    err.template head<3>() = l2.per_axis_error(x.template head<3>(), y.template head<3>());
+    err.template tail<3>() = so3.per_axis_error(x.template tail<4>(), y.template tail<4>());
+    return err;
+  }
 };
 
 enum class DistanceType {
