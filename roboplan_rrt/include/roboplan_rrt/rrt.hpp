@@ -19,6 +19,24 @@ namespace roboplan {
 
 using CombinedStateSpace = dynotree::Combined<double>;
 using KdTree = dynotree::KDTree<int, -1, 32, double, CombinedStateSpace>;
+using Vector6d = Eigen::Matrix<double, 6, 1>
+
+/// @brief Pose constraint for constraint projection RRT
+struct PoseConstraint {
+  /// @brief The end-effector frame name to compute FK for.
+  std::string frame_name;
+  /// @brief The minimum for each dimension of the pose (translation: xyz,
+  /// orientation: yaw, pitch, roll (ZYX intrinsic Euler angles))
+  Vector6d min = Vector6d::Constant(-std::numeric_limits<double>::infinity());
+  /// @brief The maximum for each dimension of the pose (translation: xyz,
+  /// orientation: yaw, pitch, roll (ZYX intrinsic Euler angles))
+  Vector6d max = Vector6d::Constant(std::numeric_limits<double>::infinity());
+  /// @brief Reference transform/frame for the constraint with respect to the base frame.
+  /// The EE pose is expressed relative to this frame before checking against min/max.
+  Eigen::Isometry3d frame = Eigen::Isometry3d::Identity();
+
+  double tolerence = 1e-3;
+};
 
 /// @brief Options struct for RRT planner.
 struct RRTOptions {
@@ -69,6 +87,12 @@ struct RRTOptions {
   /// asymptotically optimal behavior; with plain RRT or RRT-Connect, setting it to false simply
   /// keeps the cheapest path discovered across the whole budget.
   bool fast_return = true;
+
+  /// @brief Pose constraint on end effector frame
+  /// @details Only used when `rrt_connect` is true, otherwise ignored.
+  /// Contains min and max values for each dimension of deviation possible with respect to a
+  /// reference/constraint frame.
+  std::optional<PoseConstraint> pose_constraint = std::nullopt;
 };
 
 /// @brief Motion planner based on the Rapidly-exploring Random Tree (RRT) algorithm.
@@ -91,6 +115,10 @@ public:
   /// For now, this means it would break multi-threaded applications.
   /// @param seed The seed to set.
   void setRngSeed(unsigned int seed);
+
+  /// @brief Updates the pose constraint and recomputes cached internal state.
+  /// @param constraint The new pose constraint to use.
+  void setPoseConstraint(const PoseConstraint& constraint);
 
   /// @brief Initializes the search tree with the specified start pose.
   /// @param tree Reference to an empty tree.
@@ -189,6 +217,21 @@ private:
   /// @return The collapsed configuration used for nearest-neighbor lookups.
   Eigen::VectorXd collapse(const Eigen::VectorXd& q_group) const;
 
+  bool ConstrainConfig(const Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current,
+    const CollisionContext& collision_context);
+
+  bool PoseProjectConfig(const Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current,
+        const CollisionContext& collision_context,
+        const PoseConstraint& constraint);
+  
+  /// @brief Computes the signed 6D distance of the end-effector from the constraint bounds.
+  /// @details Runs FK for the EE frame, computes per-axis error via R3SO3::per_axis_error,
+  /// then compares each axis against the constraint's [min, max] bounds. Returns zero for
+  /// axes within bounds, positive for exceeding max, negative for falling below min.
+  /// @param q The full joint configuration.
+  /// @return A 6D signed distance vector [dx, dy, dz, rx, ry, rz].
+  Vector6d DistanceFromConstraintFrame(const Eigen::VectorXd& q) const;
+
   /// @brief A pointer to the scene.
   std::shared_ptr<Scene> scene_;
 
@@ -206,6 +249,11 @@ private:
   /// const-qualified in the vendored dynotree, so it cannot be called from the const
   /// `findNearNodes` where the dimension is needed.
   int state_dim_ = 0;
+
+  /// @brief Precomputed 7D pose [x, y, z, qx, qy, qz, qw] of the constraint reference frame.
+  /// @details Cached at construction to avoid recomputing the quaternion on every call to
+  /// DistanceFromConstraintFrame. Only valid when options_.pose_constraint.has_value().
+  Eigen::Matrix<double, 7, 1> pose_ref_ = Eigen::Matrix<double, 7, 1>::Zero();
 
   /// @brief A random number generator for the planner.
   std::mt19937 rng_gen_;

@@ -489,4 +489,79 @@ void RRT::setRngSeed(unsigned int seed) {
   scene_->setRngSeed(seed);
 }
 
+void RRT::setPoseConstraint(const PoseConstraint& constraint) {
+  options_.pose_constraint = constraint;
+  const Eigen::Quaterniond quat_ref(constraint.Frame.rotation());
+  pose_ref_ << constraint.Frame.translation(), quat_ref.coeffs();
+}
+
+bool RRT::ConstrainConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current,
+                          const CollisionContext& collision_context) {
+
+  if (options_.pose_constraint.has_value()) {
+    if (this->PoseProjectConfig(q_extend, q_current, collision_context,
+                                options_.pose_constraint.value())) {
+      return true;
+    };
+  }
+
+  return false;
+}
+
+bool RRT::PoseProjectConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current,
+                            const CollisionContext& collision_context,
+                            const PoseConstraint& constraint) {
+
+  const auto frame_id = scene_->getFrameId(constraint.frame_name).value(); /// check this previous in constructor and set pose consstrain function
+  const auto& v_indices = joint_group_info_.v_indices;
+  const int nv = scene_->getModel().nv;
+  const int nv_group = static_cast<int>(v_indices.size());
+
+  Eigen::VectorXd q_projected = q_extend;
+
+  Eigen::MatrixXd J_full(6, nv);
+  Eigen::MatrixXd J_group(6, nv_group);
+
+  while (true) {
+
+    auto delta_x = this->DistanceFromConstraintFrame(q_projected);
+
+    if (delta_x.norm() < constraint.tolerence) {
+      break;
+    }
+
+    J_full.setZero();
+    scene_->computeFrameJacobian(q_projected, frame_id, pinocchio::LOCAL_WORLD_ALIGNED, J_full);
+
+    for (int i = 0; i < nv_group; ++i) {
+      J_group.col(i) = J_full.col(v_indices(i));
+    }
+
+    q_projected += J_group.transpose() * (J_group * J_group.transpose()).lu().solve(delta_x);
+
+    if (((q_projected - q_current).norm() > 2 * options_.max_connection_distance) ||
+         scene_->isValidConfiguration(q_projected)) {
+      return false;
+    }
+  }
+
+  q_extent = q_project;
+  return true;
+}
+
+Vector6d RRT::DistanceFromConstraintFrame(const Eigen::VectorXd& q) const {
+  const auto& constraint = options_.pose_constraint.value();
+
+  const Eigen::Matrix4d T_world_ee = scene_->forwardKinematics(q, constraint.frame_name);
+
+  const Eigen::Quaterniond quat_ee(T_world_ee.topLeftCorner<3, 3>());
+  Eigen::Matrix<double, 7, 1> pose_ee;
+  pose_ee << T_world_ee.topRightCorner<3, 1>(), quat_ee.coeffs();
+
+  dynotree::R3SO3<double> r3so3;
+  const Vector6d error = r3so3.per_axis_error(pose_ee, pose_ref_);
+
+  return (error - constraint.max).cwiseMax(0.0) + (error - constraint.min).cwiseMin(0.0);
+}
+
 }  // namespace roboplan
