@@ -217,19 +217,28 @@ private:
   /// @return The collapsed configuration used for nearest-neighbor lookups.
   Eigen::VectorXd collapse(const Eigen::VectorXd& q_group) const;
   
-  /// @brief Check if the joint configuration statisfies the constraints imposed by user and find the 
-  /// suitable configuration which fits the constraints.
-  /// @details Thin wrapper around `collapseContinuousJointPositions` that throws on failure, so the
-  /// tree operations can call it without repeating the error handling at each call site.
-  /// @param q_group The group joint positions, in expanded (original) coordinates.
-  /// @return The collapsed configuration used for nearest-neighbor lookups.
+  /// @brief Checks if q_extend statisfies all the constraints imposed by user.
+  /// @details Selects a joint configuration which statisfies pose and torque constraints
+  /// @param q_extend The group joint positions, in extended (original) coordinates.
+  /// @param q_current The nearest node to extended node (original) coordinates.
+  /// @return True if q_extend statisfies all the constraints
   bool ConstrainConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current);
 
+  /// @brief Projects a configuration onto the pose constraint manifold in place.
+  /// @details Iterates a damped Jacobian step `delta_q = -J^T (J J^T + eps I)^-1 delta_x` until the
+  /// constraint violation falls below `constraint.tolerence`. Aborts if it drifts more than
+  /// `2 * max_connection_distance` from `q_current` or hits an invalid configuration.
+  /// @param q_extend [in,out] Configuration to project; overwritten with the result on success.
+  /// @param q_current nearest node to q_extend will be added as parent node
+  /// @param constraint The pose constraint to project onto.
+  /// @return True if it converged to a valid in-bounds configuration, false otherwise.
   bool PoseProjectConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current,
         const PoseConstraint& constraint);
+
+  void SmoothPath()
   
-  /// @brief Computes the signed 6D distance of the end-effector from the constraint bounds.
-  /// @details Runs FK for the EE frame, computes per-axis error via R3SO3::per_axis_error,
+  /// @brief Computes the signed 6D distance of the constrained link frame from the constraint bounds.
+  /// @details Runs FK for the constrained link frame, computes error along each axis,
   /// then compares each axis against the constraint's [min, max] bounds. Returns zero for
   /// axes within bounds, positive for exceeding max, negative for falling below min.
   /// @param q The full joint configuration.

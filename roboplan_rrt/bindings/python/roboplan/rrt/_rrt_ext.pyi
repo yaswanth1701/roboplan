@@ -22,10 +22,56 @@ class Node:
     def cost(self) -> float:
         """The cost-to-come from the tree root to this node (RRT* only)."""
 
+class PoseConstraint:
+    """Pose constraint on a link frame for constraint-projection RRT."""
+
+    def __init__(self, link_name: str = '', min: Annotated[NDArray[numpy.float64], dict(shape=(6), order='C')] = ..., max: Annotated[NDArray[numpy.float64], dict(shape=(6), order='C')] = ..., frame: Annotated[NDArray[numpy.float64], dict(shape=(4, 4), order='F')] = ..., tolerence: float = 0.001) -> None: ...
+
+    @property
+    def link_name(self) -> str:
+        """The link to be constrained."""
+
+    @link_name.setter
+    def link_name(self, arg: str, /) -> None: ...
+
+    @property
+    def min(self) -> Annotated[NDArray[numpy.float64], dict(shape=(6), order='C')]:
+        """
+        The minimum for each dimension of the pose (translation: xyz, orientation: roll, pitch, yaw as extrinsic XYZ Euler angles).
+        """
+
+    @min.setter
+    def min(self, arg: Annotated[NDArray[numpy.float64], dict(shape=(6), order='C')], /) -> None: ...
+
+    @property
+    def max(self) -> Annotated[NDArray[numpy.float64], dict(shape=(6), order='C')]:
+        """
+        The maximum for each dimension of the pose (translation: xyz, orientation: roll, pitch, yaw as extrinsic XYZ Euler angles).
+        """
+
+    @max.setter
+    def max(self, arg: Annotated[NDArray[numpy.float64], dict(shape=(6), order='C')], /) -> None: ...
+
+    @property
+    def frame(self) -> Annotated[NDArray[numpy.float64], dict(shape=(4, 4), order='F')]:
+        """
+        Reference transform/frame for the constraint with respect to the base frame. The link pose is expressed relative to this frame before checking against min/max.
+        """
+
+    @frame.setter
+    def frame(self, arg: Annotated[NDArray[numpy.float64], dict(shape=(4, 4), order='F')], /) -> None: ...
+
+    @property
+    def tolerence(self) -> float:
+        """The convergence tolerance for the constraint projection."""
+
+    @tolerence.setter
+    def tolerence(self, arg: float, /) -> None: ...
+
 class RRTOptions:
     """Options struct for RRT planner."""
 
-    def __init__(self, group_name: str = '', max_nodes: int = 1000, max_connection_distance: float = 3.0, collision_check_step_size: float = 0.05, collision_check_use_bisection: bool = False, goal_biasing_probability: float = 0.15, max_planning_time: float = 0.0, rrt_connect: bool = False, rrt_star: bool = False, rewire_distance: float = 5.0, fast_return: bool = True) -> None: ...
+    def __init__(self, group_name: str = '', max_nodes: int = 1000, max_connection_distance: float = 3.0, collision_check_step_size: float = 0.05, collision_check_use_bisection: bool = False, goal_biasing_probability: float = 0.15, max_planning_time: float = 0.0, rrt_connect: bool = False, rrt_star: bool = False, rewire_distance: float = 5.0, fast_return: bool = True, pose_constraint: PoseConstraint | None = None) -> None: ...
 
     @property
     def group_name(self) -> str:
@@ -110,6 +156,15 @@ class RRTOptions:
     @fast_return.setter
     def fast_return(self, arg: bool, /) -> None: ...
 
+    @property
+    def pose_constraint(self) -> PoseConstraint | None:
+        """
+        Optional pose constraint on a link frame. Only used when `rrt_connect` is true, otherwise ignored.
+        """
+
+    @pose_constraint.setter
+    def pose_constraint(self, arg: PoseConstraint | None) -> None: ...
+
 class RRT:
     """
     Motion planner based on the Rapidly-exploring Random Tree (RRT) algorithm.
@@ -122,6 +177,9 @@ class RRT:
 
     def setRngSeed(self, seed: int) -> None:
         """Sets the seed for the random number generator (RNG)."""
+
+    def setPoseConstraint(self, constraint: PoseConstraint) -> None:
+        """Updates the pose constraint."""
 
     def getNodes(self) -> tuple[list[Node], list[Node]]:
         """

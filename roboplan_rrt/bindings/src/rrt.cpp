@@ -1,5 +1,8 @@
+#include <limits>
+
 #include <nanobind/eigen/dense.h>
 #include <nanobind/nanobind.h>
+#include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/shared_ptr.h>
 #include <nanobind/stl/string.h>
@@ -21,14 +24,34 @@ void initRrt(nanobind::module_& m) {
       .def_ro("parent_id", &Node::parent_id, "The parent node ID.")
       .def_ro("cost", &Node::cost, "The cost-to-come from the tree root to this node (RRT* only).");
 
+  nanobind::class_<PoseConstraint>(m, "PoseConstraint",
+                                   "Pose constraint on a link frame for constraint-projection RRT.")
+      .def(nanobind::init<const std::string&, const Vector6d&, const Vector6d&,
+                          const Eigen::Matrix4d&, double>(),
+           "link_name"_a = "", "min"_a = Vector6d::Constant(-std::numeric_limits<double>::infinity()),
+           "max"_a = Vector6d::Constant(std::numeric_limits<double>::infinity()), "frame"_a = Eigen::Matrix4d::Identity(),
+           "tolerence"_a = 1e-3)
+      .def_rw("link_name", &PoseConstraint::link_name, "The link to be constrained.")
+      .def_rw("min", &PoseConstraint::min,
+              "The minimum for each dimension of the pose (translation: xyz, orientation: roll, "
+              "pitch, yaw as extrinsic XYZ Euler angles).")
+      .def_rw("max", &PoseConstraint::max,
+              "The maximum for each dimension of the pose (translation: xyz, orientation: roll, "
+              "pitch, yaw as extrinsic XYZ Euler angles).")
+      .def_rw("frame", &PoseConstraint::frame,
+              "Reference transform/frame for the constraint with respect to the base frame. The "
+              "link pose is expressed relative to this frame before checking against min/max.")
+      .def_rw("tolerence", &PoseConstraint::tolerence,
+              "The convergence tolerance for the constraint projection.");
+
   nanobind::class_<RRTOptions>(m, "RRTOptions", "Options struct for RRT planner.")
       .def(nanobind::init<const std::string&, size_t, double, double, bool, double, double, bool,
-                          bool, double, bool>(),
+                          bool, double, bool, std::optional<PoseConstraint>>(),
            "group_name"_a = "", "max_nodes"_a = 1000, "max_connection_distance"_a = 3.0,
            "collision_check_step_size"_a = 0.05, "collision_check_use_bisection"_a = false,
            "goal_biasing_probability"_a = 0.15, "max_planning_time"_a = 0.0,
            "rrt_connect"_a = false, "rrt_star"_a = false, "rewire_distance"_a = 5.0,
-           "fast_return"_a = true)
+           "fast_return"_a = true, "pose_constraint"_a = std::nullopt)
       .def_rw("group_name", &RRTOptions::group_name,
               "The joint group name to be used by the planner.")
       .def_rw("max_nodes", &RRTOptions::max_nodes, "The maximum number of nodes to sample.")
@@ -51,7 +74,10 @@ void initRrt(nanobind::module_& m) {
               "The configuration-space radius used to find neighbors for RRT* rewiring.")
       .def_rw("fast_return", &RRTOptions::fast_return,
               "If true, return on the first path found; if false, plan until the budget is "
-              "exhausted and return the lowest-cost path.");
+              "exhausted and return the lowest-cost path.")
+      .def_rw("pose_constraint", &RRTOptions::pose_constraint,
+              "Optional pose constraint on a link frame. Only used when `rrt_connect` is true, "
+              "otherwise ignored.");
 
   nanobind::class_<RRT>(
       m, "RRT", "Motion planner based on the Rapidly-exploring Random Tree (RRT) algorithm.")
@@ -61,6 +87,8 @@ void initRrt(nanobind::module_& m) {
            "goal"_a)
       .def("setRngSeed", &RRT::setRngSeed, "Sets the seed for the random number generator (RNG).",
            "seed"_a)
+      .def("setPoseConstraint", &RRT::setPoseConstraint,
+           "Updates the pose constraint.", "constraint"_a)
       .def("getNodes", &RRT::getNodes,
            "Returns the start and goal trees' node vectors, for visualization purposes.");
 }

@@ -7,6 +7,7 @@ import tyro
 import xacro
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pinocchio as pin
 from pinocchio.visualize import ViserVisualizer
 
@@ -18,7 +19,7 @@ from roboplan.core import (
     Scene,
 )
 from roboplan.example_models import get_package_share_dir
-from roboplan.rrt import RRTOptions, RRT, visualizeTree
+from roboplan.rrt import PoseConstraint, RRTOptions, RRT, visualizeTree
 from roboplan.toppra import PathParameterizerTOPPRA, SplineFittingMode, TOPPRAOptions
 from roboplan.visualization import (
     visualizeJointTrajectory,
@@ -26,6 +27,24 @@ from roboplan.visualization import (
     plotJointTrajectory,
     visualizeOcTree,
 )
+
+
+def _visualize_constraint_box(viz, lo, hi, name="/rrt/constraint_box", color=(0, 0, 200)):
+    """Draw the wireframe of an axis-aligned constraint box using line segments."""
+    # The 8 corners, indexed by the (x, y, z) bit pattern: bit set => use the high bound.
+    corners = np.array(
+        [[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]
+    )
+    # The 12 edges, each connecting two corners that differ in exactly one coordinate.
+    edges = [
+        (0, 1), (2, 3), (4, 5), (6, 7),  # edges along z
+        (0, 2), (1, 3), (4, 6), (5, 7),  # edges along y
+        (0, 4), (1, 5), (2, 6), (3, 7),  # edges along x
+    ]
+    segments = np.array([[corners[a], corners[b]] for a, b in edges])
+    viz.viewer.scene.add_line_segments(
+        name, points=segments, colors=color, line_width=2.0
+    )
 
 
 def main(
@@ -40,6 +59,8 @@ def main(
     rrt_star: bool = False,
     rewire_distance: float = 5.0,
     fast_return: bool = True,
+    pose_constraint: bool = False,
+    pose_constraint_margin: float = 0.15,
     include_shortcutting: bool = False,
     max_shortcutting_iters: int = 100,
     toppra_mode: SplineFittingMode = SplineFittingMode.Adaptive,
@@ -65,6 +86,8 @@ def main(
         rrt_star: Whether or not to use RRT*, which keeps optimizing until the node or time budget is exhausted and returns the lowest-cost path. Can be combined with `rrt_connect`.
         rewire_distance: The configuration-space radius used to find neighbors for RRT* rewiring (only used when `rrt_star` is true). Should generally be at least `max_connection_distance`.
         fast_return: If true, return on the first path found; if false, plan until the node or time budget is exhausted and return the lowest-cost path. Set to false to get RRT*'s asymptotically optimal behavior.
+        pose_constraint: Whether to plan with a constraint-projection (CBiRRT) pose constraint on the end-effector. Forces RRT-Connect, which is required for pose constraints. The constraint is a translation box around the start and goal EE positions (orientation unbounded), shown as a wireframe box in the visualizer.
+        pose_constraint_margin: The margin (in meters) added around the start/goal EE positions to form the constraint box. Only used when `pose_constraint` is true.
         include_shortcutting: Whether or not to include path shortcutting for found paths.
         max_shortcutting_iters: The maximum number of path shortcutting iterations.
         toppra_mode: The trajectory generation mode for TOPP-RA. Can be `Hermite`, `Cubic`, or `Adaptive` (default).
@@ -124,6 +147,12 @@ def main(
         visualizeOcTree(viz, geom_obj, viz.collisionRootNodeName)
         visualizeOcTree(viz, geom_obj, viz.visualRootNodeName)
 
+    # Pose constraints are only applied during RRT-Connect tree growth, so enable it when a
+    # constraint is requested.
+    if pose_constraint and not rrt_connect:
+        print("Pose constraints require RRT-Connect; enabling rrt_connect.")
+    use_rrt_connect = rrt_connect or pose_constraint
+
     # Set up an RRT and perform path planning.
     options = RRTOptions(
         group_name=model_data.default_joint_group,
@@ -133,7 +162,7 @@ def main(
         collision_check_use_bisection=collision_check_use_bisection,
         goal_biasing_probability=goal_biasing_probability,
         max_planning_time=max_planning_time,
-        rrt_connect=rrt_connect,
+        rrt_connect=use_rrt_connect,
         rrt_star=rrt_star,
         rewire_distance=rewire_distance,
         fast_return=fast_return,
@@ -180,6 +209,34 @@ def main(
         goal = JointConfiguration()
         goal.positions = scene.randomCollisionFreePositions()[q_indices]
         assert goal.positions is not None
+
+        # Build a pose constraint from this start/goal pair so that both endpoints satisfy it (the
+        # planner rejects start/goal configurations that already violate the constraint).
+        if pose_constraint:
+            ee_name = model_data.ee_names[0]
+            q_start_full = scene.toFullJointPositions(
+                model_data.default_joint_group, start.positions
+            )
+            q_goal_full = scene.toFullJointPositions(
+                model_data.default_joint_group, goal.positions
+            )
+            p_start = scene.forwardKinematics(q_start_full, ee_name)[:3, 3]
+            p_goal = scene.forwardKinematics(q_goal_full, ee_name)[:3, 3]
+            lo = np.minimum(p_start, p_goal) - pose_constraint_margin
+            hi = np.maximum(p_start, p_goal) + pose_constraint_margin
+
+            # Constrain the EE translation to the box; leave orientation unbounded (+/- inf).
+            min_bounds = np.full(6, -np.inf)
+            max_bounds = np.full(6, np.inf)
+            min_bounds[:3] = lo
+            max_bounds[:3] = hi
+            constraint = PoseConstraint()
+            constraint.link_name = ee_name
+            constraint.min = min_bounds
+            constraint.max = max_bounds
+            rrt.setPoseConstraint(constraint)
+            _visualize_constraint_box(viz, lo, hi)
+            print(f"Pose constraint: '{ee_name}' translation within {lo} .. {hi}")
 
         print("\nPlanning...")
         t_start = time.time()

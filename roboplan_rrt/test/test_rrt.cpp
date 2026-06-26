@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -317,6 +318,72 @@ TEST_F(RoboPlanRRTTest, TestJoinTrees) {
       rrt->joinTrees(goal_nodes, start_tree, start_nodes, false, collision_context);
   ASSERT_TRUE(maybe_path2.has_value());
   ASSERT_EQ(maybe_path2.value().first.positions, expected_positions);
+}
+
+TEST_F(RoboPlanRRTTest, PlanWithPoseConstraint) {
+  // Constraint-projection RRT-Connect: constrain the end-effector translation to a box that
+  // encloses both the start and goal EE positions (orientation left unbounded). Every node the
+  // planner adds is projected back onto this constraint, so each waypoint of the returned path
+  // must keep the EE within the box.
+  scene->setRngSeed(7);
+  JointConfiguration start, goal;
+  start.positions = scene->randomCollisionFreePositions().value();
+  goal.positions = scene->randomCollisionFreePositions().value();
+
+  const std::string ee_link = "tool0";
+  const Eigen::Vector3d p_start =
+      scene->forwardKinematics(start.positions, ee_link).topRightCorner<3, 1>();
+  const Eigen::Vector3d p_goal =
+      scene->forwardKinematics(goal.positions, ee_link).topRightCorner<3, 1>();
+
+  // Box enclosing both EE positions, with margin so start/goal satisfy the constraint and a
+  // feasible path exists. Orientation axes are left unbounded.
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+  constexpr double margin = 0.3;
+  PoseConstraint constraint;
+  constraint.link_name = ee_link;
+  constraint.min.setConstant(-kInf);
+  constraint.max.setConstant(kInf);
+  constraint.min.head<3>() = p_start.cwiseMin(p_goal).array() - margin;
+  constraint.max.head<3>() = p_start.cwiseMax(p_goal).array() + margin;
+
+  RRTOptions options;
+  options.group_name = "arm";
+  options.rrt_connect = true;  // Pose constraints are only applied in RRT-Connect mode.
+  options.pose_constraint = constraint;
+  auto rrt = std::make_unique<RRT>(scene, options);
+  rrt->setRngSeed(1234);
+
+  const auto maybe_path = rrt->plan(start, goal);
+  ASSERT_TRUE(maybe_path.has_value());
+
+  // Ensure the path starts and ends at the correct configurations.
+  const auto path = maybe_path.value();
+  ASSERT_EQ(path.positions.front(), start.positions);
+  ASSERT_EQ(path.positions.back(), goal.positions);
+
+  // Every waypoint's EE translation must lie within the constraint box (within tolerance).
+  for (const auto& q : path.positions) {
+    const Eigen::Vector3d p = scene->forwardKinematics(q, ee_link).topRightCorner<3, 1>();
+    EXPECT_TRUE((p.array() >= constraint.min.head<3>().array() - constraint.tolerence).all());
+    EXPECT_TRUE((p.array() <= constraint.max.head<3>().array() + constraint.tolerence).all());
+  }
+}
+
+TEST_F(RoboPlanRRTTest, SetPoseConstraintInvalidLink) {
+  RRTOptions options;
+  options.group_name = "arm";
+  auto rrt = std::make_unique<RRT>(scene, options);
+
+  // A constraint on a link that does not exist in the model must be rejected.
+  PoseConstraint bad_constraint;
+  bad_constraint.link_name = "nonexistent_link";
+  EXPECT_THROW(rrt->setPoseConstraint(bad_constraint), std::runtime_error);
+
+  // A constraint on a valid link must be accepted.
+  PoseConstraint good_constraint;
+  good_constraint.link_name = "tool0";
+  EXPECT_NO_THROW(rrt->setPoseConstraint(good_constraint));
 }
 
 }  // namespace roboplan

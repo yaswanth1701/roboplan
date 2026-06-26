@@ -75,6 +75,15 @@ RRT::RRT(const std::shared_ptr<Scene> scene, const RRTOptions& options)
                              std::to_string(maybe_collapsed_pos->size()) + ") for group '" +
                              options_.group_name + "'.");
   }
+
+  // Validate the pose-constraint link against the model if one was supplied through options.
+  if (options_.pose_constraint.has_value()) {
+    const std::string& link_name = options_.pose_constraint->link_name;
+    if (!scene_->getFrameId(link_name)) {
+      throw std::runtime_error("Cannot set pose constraint: link '" + link_name +
+                               "' not found in model.");
+    }
+  }
 };
 
 tl::expected<JointPath, std::string> RRT::plan(const JointConfiguration& start,
@@ -106,8 +115,10 @@ tl::expected<JointPath, std::string> RRT::plan(const JointConfiguration& start,
     return tl::make_unexpected("Goal configuration is in collision, cannot plan!");
   }
 
+  /// check if start and goal configurations are in constraint tolerance
+  /// before planning starts
   if (options_.rrt_connect && options_.pose_constraint.has_value()) {
-    auto pose_constraint = options_.pose_constraint.value();
+    auto& pose_constraint = options_.pose_constraint.value();
     auto q_start_distance = DisplacementFromConstraint(q_start);
     auto q_goal_distance = DisplacementFromConstraint(q_goal);
 
@@ -256,15 +267,16 @@ bool RRT::growTree(KdTree& kd_tree, std::vector<Node>& nodes, const Eigen::Vecto
     // Extend towards the sampled node
     auto q_extend = extend(q_current, q_sample, options_.max_connection_distance);
 
+    /// Constrained extend
     if (options_.rrt_connect && options_.pose_constraint.has_value()) {
       if (!ConstrainConfig(q_extend, q_current)) {
-        continue;
+        break;
       }
 
       /// check progress towards goal
       if (scene_->configurationDistance(q_extend, q_sample) >
           scene_->configurationDistance(q_current, q_sample)) {
-        continue;
+        break;
       }
     }
 
@@ -518,11 +530,17 @@ void RRT::setRngSeed(unsigned int seed) {
 }
 
 void RRT::setPoseConstraint(const PoseConstraint& constraint) {
+  // The link must exist in the model, otherwise FK/Jacobian lookups during planning would fail.
+  if (!scene_->getFrameId(constraint.link_name)) {
+    throw std::runtime_error("Cannot set pose constraint: link '" + constraint.link_name +
+                             "' not found in model.");
+  }
   options_.pose_constraint = constraint;
 }
 
 bool RRT::ConstrainConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current) {
 
+  /// project joint configuration to meet pose constraint
   if (options_.pose_constraint.has_value()) {
     if (!this->PoseProjectConfig(q_extend, q_current, options_.pose_constraint.value())) {
       return false;
@@ -537,9 +555,7 @@ bool RRT::ConstrainConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_cu
 bool RRT::PoseProjectConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current,
                             const PoseConstraint& constraint) {
 
-  const auto frame_id =
-      scene_->getFrameId(constraint.link_name)
-          .value();  /// check this previous in constructor and set pose constraint function
+  const auto frame_id = scene_->getFrameId(constraint.link_name).value();
   const auto& v_indices = joint_group_info_.v_indices;
   const int nv = scene_->getModel().nv;
   const int nv_group = static_cast<int>(v_indices.size());
@@ -558,15 +574,16 @@ bool RRT::PoseProjectConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_
     }
 
     J_full.setZero();
+    /// Calculate Jacobian in world frame
     scene_->computeFrameJacobian(q_projected, frame_id, pinocchio::LOCAL_WORLD_ALIGNED, J_full);
-
     J_group = J_full(Eigen::all, v_indices);
 
-    constexpr double kDampingSq = 1e-6;
     Eigen::Matrix<double, 6, 6> JJt = J_group * J_group.transpose();
-    JJt.diagonal().array() += kDampingSq;
-    const Eigen::VectorXd delta_q = -J_group.transpose() * JJt.ldlt().solve(delta_x);
-
+    /// To avoid inverse of JJt becoming ill conditioned/singular
+    JJt.diagonal().array() += 1e-6;
+    const Eigen::VectorXd delta_q = -1 * J_group.transpose() * JJt.ldlt().solve(delta_x);
+    
+    /// gradient descent projection 
     q_projected = pinocchio::integrate(scene_->getModel(), q_projected, delta_q);
 
     if ((scene_->configurationDistance(q_projected, q_current) >
@@ -591,15 +608,18 @@ Vector6d RRT::DisplacementFromConstraint(const Eigen::VectorXd& q) const {
 
   const Eigen::Matrix4d T_rel = relativeTransform(T_world_ee, constraint.frame);
   const Eigen::Matrix3d R_rel = T_rel.topLeftCorner<3, 3>();
-
+  
+  /// convert to extrinsic euler angles 
   error.head<3>() = T_rel.topRightCorner<3, 1>();
   error.tail<3>() = rotationToExtrinsicEuler(R_rel);
-
+  
+  /// calculate constrain violation with reference to constrain frame
   const Vector6d violation =
       (error - constraint.max).cwiseMax(0.0) + (error - constraint.min).cwiseMin(0.0);
 
   const Eigen::Matrix3d e = eulerRateToAngularVelocityMatrix(error.tail<3>());
-
+  
+  /// transform to world frame 
   Vector6d violation_world;
   violation_world.head<3>() = R_ref * violation.head<3>();
   violation_world.tail<3>() = R_ref * (e * violation.tail<3>());
