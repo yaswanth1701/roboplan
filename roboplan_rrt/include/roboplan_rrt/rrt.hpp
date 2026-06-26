@@ -20,6 +20,7 @@ namespace roboplan {
 using CombinedStateSpace = dynotree::Combined<double>;
 using KdTree = dynotree::KDTree<int, -1, 32, double, CombinedStateSpace>;
 using Vector6d = Eigen::Matrix<double, 6, 1>;
+using TimePoint = std::chrono::time_point<std::chrono::steady_clock>;
 
 /// @brief Pose constraint for constraint projection RRT
 struct PoseConstraint {
@@ -235,7 +236,9 @@ private:
   bool PoseProjectConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current,
         const PoseConstraint& constraint);
 
-  void SmoothPath()
+  tl::expected<JointPath, std::string> SmoothPath(const TimePoint& start_time, JointPath& path);
+
+  bool CheckTimeOut(const TimePoint& start_time);
   
   /// @brief Computes the signed 6D distance of the constrained link frame from the constraint bounds.
   /// @details Runs FK for the constrained link frame, computes error along each axis,

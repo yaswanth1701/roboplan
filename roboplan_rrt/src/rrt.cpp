@@ -162,9 +162,7 @@ tl::expected<JointPath, std::string> RRT::plan(const JointConfiguration& start,
 
   while (true) {
     // Check for timeout.
-    auto elapsed =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
-    if (options_.max_planning_time > 0 && options_.max_planning_time <= elapsed) {
+    if (CheckTimeOut(start_time)) {
       // Without fast_return, the budget running out is the normal stopping condition: return the
       // best path found so far, if any.
       if (best_path.has_value()) {
@@ -227,6 +225,13 @@ tl::expected<JointPath, std::string> RRT::plan(const JointConfiguration& start,
       if (path_cost < best_cost) {
         best_cost = path_cost;
         best_path = std::move(path);
+      }
+
+      /// once the path is found exhaust rest of the time budget to
+      /// find the smoother path
+      if (options_.rrt_connect && options_.pose_constraint.has_value()) {
+
+        SmoothPath(start_time, path, collision_context);
       }
     }
 
@@ -546,7 +551,6 @@ bool RRT::ConstrainConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_cu
       return false;
     };
   }
-
   /// torque constraint
 
   return true;
@@ -624,6 +628,34 @@ Vector6d RRT::DisplacementFromConstraint(const Eigen::VectorXd& q) const {
   violation_world.head<3>() = R_ref * violation.head<3>();
   violation_world.tail<3>() = R_ref * (e * violation.tail<3>());
   return violation_world;
+}
+
+tl::expected<JointPath, std::string> RRT::SmoothPath(const TimePoint& start_time, JointPath& path)
+{
+  KdTree shortcut_tree;
+  std::vector<Node> shortcut_nodes;
+  while (true) {
+  if (CheckTimeOut(start_time)) {
+    // Without fast_return, the budget running out is the normal stopping condition: return the
+    // best path found so far, if any.
+    return path;
+    return tl::make_unexpected("RRT timed out after " +
+                               std::to_string(options_.max_planning_time) + " seconds.");
+  }
+
+
+
+  }
+}
+
+bool RRT::CheckTimeOut(const std::chrono::time_point<std::chrono::steady_clock>& start_time) {
+
+  auto elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
+  if (options_.max_planning_time > 0 && options_.max_planning_time <= elapsed) {
+    return true;
+  }
+  return false;
 }
 
 }  // namespace roboplan
