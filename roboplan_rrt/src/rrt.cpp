@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <limits>
 #include <stdexcept>
 
 #include <roboplan/core/path_utils.hpp>
@@ -95,6 +94,7 @@ tl::expected<JointPath, std::string> RRT::plan(const JointConfiguration& start,
   auto q_start = scene_->toFullJointPositions(options_.group_name, start.positions);
   auto q_goal = scene_->toFullJointPositions(options_.group_name, goal.positions);
   auto q_sample = q_start;
+  bool crrt_connect = options_.rrt_connect && options_.pose_constraint.has_value();
 
   // Snapshot the scene's collision geometry into this plan's private context. All collision checks
   // below route through it, so this plan() call never contends on the Scene's shared collision
@@ -117,7 +117,7 @@ tl::expected<JointPath, std::string> RRT::plan(const JointConfiguration& start,
 
   /// check if start and goal configurations are in constraint tolerance
   /// before planning starts
-  if (options_.rrt_connect && options_.pose_constraint.has_value()) {
+  if (crrt_connect) {
     auto& pose_constraint = options_.pose_constraint.value();
     auto q_start_distance = DisplacementFromConstraint(q_start);
     auto q_goal_distance = DisplacementFromConstraint(q_goal);
@@ -201,7 +201,8 @@ tl::expected<JointPath, std::string> RRT::plan(const JointConfiguration& start,
 
     // Extend the growing tree a single step toward the sample (EXTEND).
     // If nothing was added, resample and try again.
-    if (!growTree(tree, nodes, q_sample, collision_context, /*greedy*/ false)) {
+    bool greedy = crrt_connect ? true: false;
+    if (!growTree(tree, nodes, q_sample, collision_context, /*greedy*/ greedy)) {
       continue;
     }
 
@@ -222,16 +223,16 @@ tl::expected<JointPath, std::string> RRT::plan(const JointConfiguration& start,
       if (options_.fast_return) {
         return std::move(path);
       }
+
+      if (crrt_connect) {
+        // If the path is found via Constrained-RRT-Connect, smooth it.
+        SmoothPath(start_time, path, collision_context);
+        return std::move(path);
+      }
+
       if (path_cost < best_cost) {
         best_cost = path_cost;
         best_path = std::move(path);
-      }
-
-      /// once the path is found exhaust rest of the time budget to
-      /// find the smoother path
-      if (options_.rrt_connect && options_.pose_constraint.has_value()) {
-
-        SmoothPath(start_time, path, collision_context);
       }
     }
 
@@ -267,13 +268,14 @@ bool RRT::growTree(KdTree& kd_tree, std::vector<Node>& nodes, const Eigen::Vecto
 
   int parent_id = nn.id;
   auto q_current = q_nearest;
+  bool crrt_connect = options_.rrt_connect && options_.pose_constraint.has_value();
 
   while (true) {
     // Extend towards the sampled node
     auto q_extend = extend(q_current, q_sample, options_.max_connection_distance);
 
     /// Constrained extend
-    if (options_.rrt_connect && options_.pose_constraint.has_value()) {
+    if (crrt_connect) {
       if (!ConstrainConfig(q_extend, q_current)) {
         break;
       }
@@ -630,23 +632,93 @@ Vector6d RRT::DisplacementFromConstraint(const Eigen::VectorXd& q) const {
   return violation_world;
 }
 
-tl::expected<JointPath, std::string> RRT::SmoothPath(const TimePoint& start_time, JointPath& path)
+void RRT::SmoothPath(const TimePoint& start_time, JointPath& path,
+                          const CollisionContext& collision_context)
 {
+  /// already the best possible path
+  if (path.positions.size() < 4) {
+    return;
+  }
+
   KdTree shortcut_tree;
   std::vector<Node> shortcut_nodes;
-  while (true) {
-  if (CheckTimeOut(start_time)) {
-    // Without fast_return, the budget running out is the normal stopping condition: return the
-    // best path found so far, if any.
-    return path;
-    return tl::make_unexpected("RRT timed out after " +
-                               std::to_string(options_.max_planning_time) + " seconds.");
+  std::vector<Node> best_nodes;
+  best_nodes.reserve(path.positions.size());
+  
+  /// reconstruct the full node graph
+  for (const auto& position : path.positions) {
+    const Eigen::VectorXd q = scene_->toFullJointPositions(options_.group_name, position);
+    const int parent_id = best_nodes.empty() ? -1 : static_cast<int>(best_nodes.size()) - 1;
+    const double cost =
+        best_nodes.empty()
+            ? 0.0
+            : best_nodes.back().cost +
+                  scene_->configurationDistance(best_nodes.back().config, q);
+
+    best_nodes.emplace_back(q, parent_id, cost);
   }
 
+  size_t start_idx, end_idx;
+  size_t num_nodes = path.positions.size();
+  
+  /// dummy initialization
+  std::uniform_int_distribution<size_t> random_start(1, num_nodes - 2);
+  std::uniform_int_distribution<size_t> random_end(1, num_nodes - 1);
 
+  while (true) {
+    if (CheckTimeOut(start_time) || num_nodes < 4) {
+      path = getPath(best_nodes, best_nodes.back());
+      std::reverse(path.positions.begin(), path.positions.end());
+      return;
+    }
 
+    random_start.param(std::uniform_int_distribution<size_t>::param_type(1, num_nodes - 2));
+    start_idx = random_start(rng_gen_);
+
+    random_end.param(std::uniform_int_distribution<size_t>::param_type(start_idx + 1, num_nodes - 1));
+    end_idx = random_end(rng_gen_);
+
+    if (end_idx - start_idx == 1)
+    {
+      continue;
+    }
+
+    const auto start_node = best_nodes[start_idx];
+    const auto end_node = best_nodes[end_idx];
+
+    initializeTree(shortcut_tree, shortcut_nodes, start_node.config, options_.max_shortcut_size);
+
+    /// greedy grow towards the target node
+    if (!growTree(shortcut_tree, shortcut_nodes, end_node.config, collision_context, true)) {
+      continue;
+    }
+
+    if (shortcut_nodes.back().config == end_node.config) {
+
+      const double original_cost = end_node.cost - start_node.cost;
+
+      if (shortcut_nodes.back().cost < original_cost) {
+          // Erase the old segment [start_index, end_index] and insert the shortcut in its place.
+          best_nodes.erase(best_nodes.begin() + start_idx,
+                               best_nodes.begin() + end_idx + 1);
+  
+          best_nodes.insert(best_nodes.begin() + start_idx, shortcut_nodes.begin(),
+                                shortcut_nodes.end());
+
+          /// update parent id and cost
+          for (size_t i = start_idx; i < best_nodes.size(); ++i) {
+            best_nodes[i].parent_id = static_cast<int>(i) - 1;
+           
+            best_nodes[i].cost = best_nodes[i - 1].cost + 
+                scene_->configurationDistance(best_nodes[i - 1].config, 
+                best_nodes[i].config);
+          }
+        }
+      }
+    num_nodes = best_nodes.size();
   }
 }
+
 
 bool RRT::CheckTimeOut(const std::chrono::time_point<std::chrono::steady_clock>& start_time) {
 

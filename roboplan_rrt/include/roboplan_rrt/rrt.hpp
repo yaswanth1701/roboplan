@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <memory>
 #include <optional>
 #include <random>
@@ -94,6 +95,8 @@ struct RRTOptions {
   /// Contains min and max values for each dimension of deviation possible with respect to a
   /// reference/constraint frame.
   std::optional<PoseConstraint> pose_constraint = std::nullopt;
+
+  size_t max_shortcut_size = 100;
 };
 
 /// @brief Motion planner based on the Rapidly-exploring Random Tree (RRT) algorithm.
@@ -236,7 +239,8 @@ private:
   bool PoseProjectConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current,
         const PoseConstraint& constraint);
 
-  tl::expected<JointPath, std::string> SmoothPath(const TimePoint& start_time, JointPath& path);
+  void SmoothPath(const TimePoint& start_time, JointPath& path,
+                       const CollisionContext& collision_context);
 
   bool CheckTimeOut(const TimePoint& start_time);
   
