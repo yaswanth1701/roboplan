@@ -95,7 +95,9 @@ struct RRTOptions {
   /// Contains min and max values for each dimension of deviation possible with respect to a
   /// reference/constraint frame.
   std::optional<PoseConstraint> pose_constraint = std::nullopt;
-
+  
+  /// @brief The maximum number of nodes to sample for the shortcut.
+  /// @details Only used when `rrt_connect` is true.
   size_t max_shortcut_size = 100;
 };
 
@@ -222,7 +224,7 @@ private:
   Eigen::VectorXd collapse(const Eigen::VectorXd& q_group) const;
   
   /// @brief Checks if q_extend statisfies all the constraints imposed by user.
-  /// @details Selects a joint configuration which statisfies pose and torque constraints
+  /// @details Selects a joint configuration which statisfies pose constraints
   /// @param q_extend The group joint positions, in extended (original) coordinates.
   /// @param q_current The nearest node to extended node (original) coordinates.
   /// @return True if q_extend statisfies all the constraints
@@ -238,10 +240,20 @@ private:
   /// @return True if it converged to a valid in-bounds configuration, false otherwise.
   bool PoseProjectConfig(Eigen::VectorXd& q_extend, const Eigen::VectorXd& q_current,
         const PoseConstraint& constraint);
-
+  
+  /// @brief Smoothes a path using the RRT-Connect algorithm.
+  /// @details Randomly samples from existing path segments and tries to find lower cost paths
+  /// an
+  /// @param start_time The start time of the path.
+  /// @param path The path to smooth.
+  /// @param collision_context This plan's private collision context, used for all collision checks.
   void SmoothPath(const TimePoint& start_time, JointPath& path,
                        const CollisionContext& collision_context);
-
+  
+  /// @brief Check for time out condition
+  /// @details Calculates the time since start_time and returns true if it exceeds max_planning_time
+  /// @param start_time 
+  /// @return True if time exceeds max_planning_time, otherwise false.
   bool CheckTimeOut(const TimePoint& start_time);
   
   /// @brief Computes the signed 6D distance of the constrained link frame from the constraint bounds.

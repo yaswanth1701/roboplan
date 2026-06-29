@@ -202,7 +202,7 @@ tl::expected<JointPath, std::string> RRT::plan(const JointConfiguration& start,
     // Extend the growing tree a single step toward the sample (EXTEND).
     // If nothing was added, resample and try again.
     bool greedy = crrt_connect ? true: false;
-    if (!growTree(tree, nodes, q_sample, collision_context, /*greedy*/ greedy)) {
+    if (!growTree(tree, nodes, q_sample, collision_context, /*greedy*/ false)) {
       continue;
     }
 
@@ -678,13 +678,12 @@ void RRT::SmoothPath(const TimePoint& start_time, JointPath& path,
     random_end.param(std::uniform_int_distribution<size_t>::param_type(start_idx + 1, num_nodes - 1));
     end_idx = random_end(rng_gen_);
 
-    if (end_idx - start_idx == 1)
-    {
+    if (end_idx - start_idx == 1){
       continue;
     }
 
-    const auto start_node = best_nodes[start_idx];
-    const auto end_node = best_nodes[end_idx];
+    const auto& start_node = best_nodes[start_idx];
+    const auto& end_node = best_nodes[end_idx];
 
     initializeTree(shortcut_tree, shortcut_nodes, start_node.config, options_.max_shortcut_size);
 
@@ -698,23 +697,22 @@ void RRT::SmoothPath(const TimePoint& start_time, JointPath& path,
       const double original_cost = end_node.cost - start_node.cost;
 
       if (shortcut_nodes.back().cost < original_cost) {
-          // Erase the old segment [start_index, end_index] and insert the shortcut in its place.
-          best_nodes.erase(best_nodes.begin() + start_idx,
-                               best_nodes.begin() + end_idx + 1);
-  
-          best_nodes.insert(best_nodes.begin() + start_idx, shortcut_nodes.begin(),
-                                shortcut_nodes.end());
+        // Erase the old segment [start_index, end_index] and insert the shortcut in its place.
+        best_nodes.erase(best_nodes.begin() + start_idx,
+                             best_nodes.begin() + end_idx + 1);
 
-          /// update parent id and cost
-          for (size_t i = start_idx; i < best_nodes.size(); ++i) {
-            best_nodes[i].parent_id = static_cast<int>(i) - 1;
-           
-            best_nodes[i].cost = best_nodes[i - 1].cost + 
-                scene_->configurationDistance(best_nodes[i - 1].config, 
-                best_nodes[i].config);
-          }
+        best_nodes.insert(best_nodes.begin() + start_idx, shortcut_nodes.begin(),
+                              shortcut_nodes.end());
+        /// update parent id and cost
+        for (size_t i = start_idx; i < best_nodes.size(); ++i) {
+          best_nodes[i].parent_id = static_cast<int>(i) - 1;
+         
+          best_nodes[i].cost = best_nodes[i - 1].cost + 
+              scene_->configurationDistance(best_nodes[i - 1].config, 
+              best_nodes[i].config);
         }
       }
+    }
     num_nodes = best_nodes.size();
   }
 }

@@ -39,7 +39,7 @@ void initRrt(nanobind::module_& m) {
               "The maximum for each dimension of the pose (translation: xyz, orientation: roll, "
               "pitch, yaw as extrinsic XYZ Euler angles).")
       .def_rw("frame", &PoseConstraint::frame,
-              "Reference transform/frame for the constraint with respect to the base frame. The "
+              "Reference transform/frame for the constraint with respect to the root. The "
               "link pose is expressed relative to this frame before checking against min/max.")
       .def_rw("tolerence", &PoseConstraint::tolerence,
               "The convergence tolerance for the constraint projection.");

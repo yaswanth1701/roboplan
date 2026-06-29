@@ -55,7 +55,7 @@ class PoseConstraint:
     @property
     def frame(self) -> Annotated[NDArray[numpy.float64], dict(shape=(4, 4), order='F')]:
         """
-        Reference transform/frame for the constraint with respect to the base frame. The link pose is expressed relative to this frame before checking against min/max.
+        Reference transform/frame for the constraint with respect to the root. The link pose is expressed relative to this frame before checking against min/max.
         """
 
     @frame.setter

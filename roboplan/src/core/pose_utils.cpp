@@ -31,8 +31,6 @@ Eigen::Matrix4d interpolatePose(const Eigen::Matrix4d& start, const Eigen::Matri
 }
 
 Eigen::Matrix4d relativeTransform(const Eigen::Matrix4d& a, const Eigen::Matrix4d& b) {
-  // Pose of a expressed in b's frame: T_rel = b^{-1} * a, using the rigid-transform inverse
-  // (R_b^T, -R_b^T p_b) rather than a general 4x4 inverse.
   const Eigen::Matrix3d R_b = b.block<3, 3>(0, 0);
   const Eigen::Vector3d p_b = b.block<3, 1>(0, 3);
 
@@ -43,10 +41,6 @@ Eigen::Matrix4d relativeTransform(const Eigen::Matrix4d& a, const Eigen::Matrix4
 }
 
 Eigen::Vector3d rotationToExtrinsicEuler(const Eigen::Matrix3d& rotation) {
-  // Extrinsic XYZ (fixed-axis roll-pitch-yaw): R = Rz(yaw) * Ry(pitch) * Rx(roll).
-  // Extracted with atan2 (continuous around zero), unlike Eigen::eulerAngles() which canonicalizes
-  // the first angle into [0, pi]. Singular at pitch = +/- pi/2 (gimbal lock), where roll and yaw
-  // are not separable.
   Eigen::Vector3d rpy;
   rpy(0) = std::atan2(rotation(2, 1), rotation(2, 2));                                  // roll  (X)
   rpy(1) = std::atan2(-rotation(2, 0), std::hypot(rotation(2, 1), rotation(2, 2)));     // pitch (Y)

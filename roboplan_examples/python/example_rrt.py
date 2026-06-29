@@ -13,6 +13,7 @@ from pinocchio.visualize import ViserVisualizer
 
 from common import get_model_data, get_octree
 from roboplan.core import (
+    CartesianConfiguration,
     JointConfiguration,
     PathShortcutter,
     PathShortcuttingOptions,
@@ -20,6 +21,7 @@ from roboplan.core import (
 )
 from roboplan.example_models import get_package_share_dir
 from roboplan.rrt import PoseConstraint, RRTOptions, RRT, visualizeTree
+from roboplan.simple_ik import SimpleIk, SimpleIkOptions
 from roboplan.toppra import PathParameterizerTOPPRA, SplineFittingMode, TOPPRAOptions
 from roboplan.visualization import (
     visualizeJointTrajectory,
@@ -27,6 +29,18 @@ from roboplan.visualization import (
     plotJointTrajectory,
     visualizeOcTree,
 )
+
+
+def _rotation_to_extrinsic_euler(rotation):
+    """Extrinsic XYZ Euler angles (roll, pitch, yaw) of a 3x3 rotation matrix.
+
+    Replicates roboplan's `rotationToExtrinsicEuler` (R = Rz(yaw) Ry(pitch) Rx(roll), atan2
+    extraction) so the bounds computed here match the constraint check inside the planner.
+    """
+    roll = np.arctan2(rotation[2, 1], rotation[2, 2])
+    pitch = np.arctan2(-rotation[2, 0], np.hypot(rotation[2, 1], rotation[2, 2]))
+    yaw = np.arctan2(rotation[1, 0], rotation[0, 0])
+    return np.array([roll, pitch, yaw])
 
 
 def _visualize_constraint_box(viz, lo, hi, name="/rrt/constraint_box", color=(0, 0, 200)):
@@ -61,6 +75,8 @@ def main(
     fast_return: bool = True,
     pose_constraint: bool = False,
     pose_constraint_margin: float = 0.15,
+    orientation_margin: float = 0.1,
+    line_length: float = 0.3,
     include_shortcutting: bool = False,
     max_shortcutting_iters: int = 100,
     toppra_mode: SplineFittingMode = SplineFittingMode.Adaptive,
@@ -86,8 +102,10 @@ def main(
         rrt_star: Whether or not to use RRT*, which keeps optimizing until the node or time budget is exhausted and returns the lowest-cost path. Can be combined with `rrt_connect`.
         rewire_distance: The configuration-space radius used to find neighbors for RRT* rewiring (only used when `rrt_star` is true). Should generally be at least `max_connection_distance`.
         fast_return: If true, return on the first path found; if false, plan until the node or time budget is exhausted and return the lowest-cost path. Set to false to get RRT*'s asymptotically optimal behavior.
-        pose_constraint: Whether to plan with a constraint-projection (CBiRRT) pose constraint on the end-effector. Forces RRT-Connect, which is required for pose constraints. The constraint is a translation box around the start and goal EE positions (orientation unbounded), shown as a wireframe box in the visualizer.
-        pose_constraint_margin: The margin (in meters) added around the start/goal EE positions to form the constraint box. Only used when `pose_constraint` is true.
+        pose_constraint: Whether to plan with a constraint-projection (CBiRRT) pose constraint on the end-effector. Forces RRT-Connect. The goal is built (via IK) as the start EE pose translated along a straight line by `line_length`, keeping the same orientation; the constraint then holds the EE orientation roughly constant (a tight band around the start orientation) while the position stays inside a box around the line. So the tool moves along a line at (near-)constant orientation.
+        pose_constraint_margin: The margin in meters around the start->goal line segment used to form the position box. Only used when `pose_constraint` is true.
+        orientation_margin: The half-width in radians of the orientation band around the (constant) start orientation, in extrinsic XYZ roll-pitch-yaw. Smaller keeps orientation more constant. Only used when `pose_constraint` is true.
+        line_length: The distance in meters the end-effector is asked to travel along the line (the goal is the start EE position plus this offset, at the same orientation). Only used when `pose_constraint` is true.
         include_shortcutting: Whether or not to include path shortcutting for found paths.
         max_shortcutting_iters: The maximum number of path shortcutting iterations.
         toppra_mode: The trajectory generation mode for TOPP-RA. Can be `Hermite`, `Cubic`, or `Adaptive` (default).
@@ -169,6 +187,21 @@ def main(
     )
     rrt = RRT(scene, options)
 
+    # IK solver used (only when pose_constraint is set) to build a goal that is the start EE pose
+    # translated along a line at the same orientation.
+    ik_solver = SimpleIk(
+        scene,
+        SimpleIkOptions(
+            group_name=model_data.default_joint_group,
+            check_collisions=True,
+            # The default max_time (5 ms) is too short to converge on a fixed-orientation target;
+            # give the solver more time and restarts so goal generation succeeds reliably.
+            max_time=0.1,
+            max_iters=200,
+            max_restarts=10,
+        ),
+    )
+
     toppra = PathParameterizerTOPPRA(scene, model_data.default_joint_group)
     traj_dt = 0.01
 
@@ -222,21 +255,28 @@ def main(
             )
             p_start = scene.forwardKinematics(q_start_full, ee_name)[:3, 3]
             p_goal = scene.forwardKinematics(q_goal_full, ee_name)[:3, 3]
+
+            # Constrain the EE translation to a box enclosing the start and goal positions; leave
+            # orientation unbounded. Both endpoints lie inside the box, so they satisfy the
+            # constraint (the planner rejects start/goal that already violate it).
             lo = np.minimum(p_start, p_goal) - pose_constraint_margin
             hi = np.maximum(p_start, p_goal) + pose_constraint_margin
 
-            # Constrain the EE translation to the box; leave orientation unbounded (+/- inf).
             min_bounds = np.full(6, -np.inf)
             max_bounds = np.full(6, np.inf)
             min_bounds[:3] = lo
             max_bounds[:3] = hi
+
             constraint = PoseConstraint()
             constraint.link_name = ee_name
             constraint.min = min_bounds
             constraint.max = max_bounds
             rrt.setPoseConstraint(constraint)
             _visualize_constraint_box(viz, lo, hi)
-            print(f"Pose constraint: '{ee_name}' translation within {lo} .. {hi}")
+            print(
+                f"Pose constraint: '{ee_name}' translation within "
+                f"{np.round(lo, 3)} .. {np.round(hi, 3)} (orientation free)"
+            )
 
         print("\nPlanning...")
         t_start = time.time()

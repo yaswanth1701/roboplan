@@ -31,8 +31,7 @@ Eigen::Matrix4d relativeTransform(const Eigen::Matrix4d& a, const Eigen::Matrix4
 
 /// @brief Extracts extrinsic XYZ Euler angles (fixed-axis roll-pitch-yaw) from a rotation matrix.
 /// @details The returned angles reconstruct the rotation as R = Rz(yaw) * Ry(pitch) * Rx(roll)
-/// (extrinsic XYZ is identical to intrinsic ZYX). Uses atan2 so the result is continuous around
-/// zero. Singular at pitch = +/- pi/2 (gimbal lock).
+/// (extrinsic XYZ is identical to intrinsic ZYX).
 /// @param rotation A 3x3 rotation matrix.
 /// @return [roll (X), pitch (Y), yaw (Z)] in radians.
 Eigen::Vector3d rotationToExtrinsicEuler(const Eigen::Matrix3d& rotation);
