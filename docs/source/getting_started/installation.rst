@@ -1,11 +1,11 @@
 Installation
 ============
 
-First, clone this repo *including submodules*.
+First, clone this repo.
 
 ::
 
-    git clone --recursive https://github.com/open-planning/roboplan.git
+    git clone https://github.com/open-planning/roboplan.git
     cd roboplan
 
 Minimally, this will give you access to the examples so you can run them regardless of how you installed RoboPlan.
@@ -18,7 +18,10 @@ The rest of this page shows various ways of getting started with RoboPlan.
 Pre-built
 ---------
 
-RoboPlan is available via `conda-forge <https://conda-forge.org/>`_ for easy installation.
+RoboPlan is available via `PyPi <https://pypi.org/>`_ and `conda-forge <https://conda-forge.org/>`_ for easy installation.
+
+Conda (recommended)
+~~~~~~~~~~~~~~~~~~~
 
 To get started, first `install conda <https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html>`_.
 
@@ -26,7 +29,7 @@ We recommend creating your own environment for isolation, installing all the lib
 
 ::
 
-    conda create -n roboplan -c conda-forge roboplan-python roboplan-rrt-python roboplan-simple-ik-python roboplan-oink-python roboplan-toppra-python
+    conda create -n roboplan -c conda-forge roboplan-all-python
     conda activate roboplan
 
 In your new environment, you can import the ``roboplan`` Python bindings.
@@ -44,6 +47,26 @@ For example, if you cloned the repo to a ``roboplan`` subfolder:
     python roboplan/roboplan_examples/python/example_ik.py
 
 For each package in this repository, you can use conda to install either a C++ only library (e.g., ``libroboplan-simple-ik``) or a library with Python bindings (e.g., ``roboplan-simple-ik-python``).
+We also provide convenient metapackages (``libroboplan-all`` and ``roboplan-all-python``) containing all the libraries.
+
+---
+
+PyPi (Experimental)
+~~~~~~~~~~~~~~~~~~~
+
+You can also ``pip install roboplan`` to get all the Python bindings as one package.
+
+We recommend creating a Python virtual environment for isolation.
+
+::
+
+    python3 -m venv roboplan
+    source roboplan/bin/activate
+    pip3 install roboplan
+
+These PyPi wheels are packaged from an automated CI job that occurs on a new tagged version of RoboPlan.
+The code that performs this building can be found in the ``packaging`` subfolder of this repository.
+
 
 ---
 
@@ -121,7 +144,7 @@ ROS 2 (colcon)
 
 If you are using `ROS 2 <https://docs.ros.org/>`_, you can build RoboPlan with the ``colcon`` build system.
 
-For this workflow, you should clone the repo (again, *including submodules*) to a valid ROS 2 workspace.
+For this workflow, you should clone the repo to a valid ROS 2 workspace.
 
 ::
 

@@ -18,7 +18,7 @@ def test_roboplan_core_version_attr() -> None:
     import roboplan.core
 
     ver = roboplan.core.__version__
-    assert ver == "0.4.0", "Incorrect roboplan-core version in module attribute"
+    assert ver == "0.5.1", "Incorrect roboplan-core version in module attribute"
 
 
 def test_roboplan_core_version_metadata() -> None:
@@ -31,10 +31,10 @@ def test_roboplan_core_version_metadata() -> None:
         pytest.skip(
             "roboplan-core distribution metadata not available (non-wheel install)"
         )
-    assert meta_version == "0.4.0", "Incorrect roboplan-core version in metadata"
+    assert meta_version == "0.5.1", "Incorrect roboplan-core version in metadata"
 
 
 def test_import_pinocchio() -> None:
     assert importlib.util.find_spec("pinocchio")
     pinocchio = importlib.import_module("pinocchio")
-    assert parse(pinocchio.__version__) >= parse("3.9.0")
+    assert parse(pinocchio.__version__) >= parse("4.0.0")
